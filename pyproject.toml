@@ -1,0 +1,65 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "maximusforge"
+version = "0.1.0"
+description = "A framework for graph-based autonomous AI systems."
+readme = "README.md"
+requires-python = ">=3.11"
+# No license is declared yet; see "License" in README.md.
+keywords = ["agents", "llm", "workflows", "agentic-ai"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Typing :: Typed",
+]
+dependencies = [
+    "pydantic>=2.7",
+    # Graph execution backend, isolated behind WorkflowEngine (ADR-006).
+    "langgraph>=1.2",
+    "langchain-core>=1.4.7,<2",  # RunnableLambda in the LangGraph adapter.
+    # Transport for the OpenAI-compatible reference LLM adapter.
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+# Placeholder for the PostgreSQL + pgvector memory backend (ADR-003). Not implemented yet.
+# postgres = ["psycopg[binary]>=3.2", "pgvector>=0.3"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/maximusforge"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+addopts = "-ra --strict-markers"
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "TID", "RUF"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"langgraph".msg = "LangGraph may only be imported by maximusforge.workflows.engines.langgraph_engine (ADR-006)."
+
+[tool.ruff.lint.per-file-ignores]
+"src/maximusforge/workflows/engines/langgraph_engine.py" = ["TID251"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+plugins = ["pydantic.mypy"]
+files = ["src", "tests", "examples"]
