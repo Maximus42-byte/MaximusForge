@@ -2,8 +2,9 @@
 
 > A framework for graph-based autonomous AI systems.
 
-**Status: pre-alpha (Bootstrap v0.1).** The architectural foundation and a minimal executable
-core exist. Most of the platform described below is planned, not built. APIs will change.
+**Status: pre-alpha (Execution Reliability v0.1.1).** The architectural foundation and a
+minimal executable core exist. Most of the platform described below is planned, not built.
+APIs will change.
 
 ## Overview
 
@@ -60,8 +61,8 @@ dependency rules and extension points, and [docs/adr/](docs/adr/) for the decisi
 
 - Workflow definition API (nodes, edges, conditional edges/loops, validation) and the
   `WorkflowEngine` interface
-- LangGraph-backed engine behind that interface, with a step limit, node-failure wrapping and
-  an execution trace
+- LangGraph-backed engine behind that interface, with a step limit, explicit node retries,
+  per-attempt timeouts, recovery routes, cancellation propagation and structured records
 - `Agent` base class, frozen `AgentState` with enforced status transitions
 - Provider-independent `LLMProvider`, an OpenAI-compatible reference adapter (hosted or local
   servers), and a scripted fake for tests
@@ -74,8 +75,9 @@ dependency rules and extension points, and [docs/adr/](docs/adr/) for the decisi
 
 ### In development
 
-Nothing is actively in progress beyond Bootstrap v0.1. Next up is roadmap Phase 1: retries,
-error routing, execution events, native tool-calling and a bounded ReAct node.
+The remaining Phase 1 work is planned: execution events and hooks, native tool-calling,
+a bounded ReAct node, streaming and a serializable state contract. See the
+[roadmap](docs/roadmap.md).
 
 ### Planned
 
@@ -107,7 +109,7 @@ MaximusForge/
 │   ├── tools/           Tool, ToolRegistry
 │   └── memory/          MemoryStore interfaces, InMemoryStore
 ├── tests/               Unit and architecture tests (no network required)
-├── examples/            Offline runnable example
+├── examples/            Offline ResearchAgent and reliability examples
 ├── docs/                architecture.md, roadmap.md, adr/
 ├── pyproject.toml
 └── .env.example         Variable names only
@@ -129,13 +131,28 @@ ruff check .                 # lint
 mypy                         # type check
 
 python examples/research_agent_offline.py
+python examples/execution_reliability_offline.py
 ```
 
-The example uses a scripted LLM and a canned search tool, so it runs fully offline. To use a
+The ResearchAgent example uses a scripted LLM and a canned search tool, so it runs fully offline. To use a
 real model, copy `.env.example` to `.env`, set the `MAXIMUSFORGE_LLM_*` variables, and build the
 provider with `OpenAICompatibleProvider(OpenAICompatibleSettings.from_env())`. Servers
 exposing OpenAI-compatible chat completions can work, including Ollama and vLLM. Credentials
 are never read unless you ask for them.
+
+## Execution reliability
+
+A node may opt into retries and a per-attempt timeout. Retries require named exception classes
+or explicit timeout eligibility; they should be used only when repeating the node is safe.
+An error edge can route an exhausted operational failure to a recovery node. Recovery receives
+structured `NodeFailure` context without modifying the workflow state schema. Results and
+unhandled errors include per-node `ExecutionRecord`s with attempt counts, timeout counts and
+routing outcomes. `ToolRegistry` failures are returned as `ToolResult` values and do not
+implicitly trigger node retries.
+
+Run the [offline reliability example](examples/execution_reliability_offline.py) to see retries
+followed by recovery. See [ADR-007](docs/adr/0007-execution-reliability.md) for semantics,
+cancellation behavior and limitations.
 
 ## Development philosophy
 

@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes the architecture of MaximusForge **as implemented in Bootstrap v0.1**,
+This document describes the architecture of MaximusForge **as implemented through v0.1.1**,
 and marks where planned components will attach. Decisions and their rationale live in the
 [ADRs](adr/).
 
@@ -48,9 +48,11 @@ LangGraphEngine     compiles the Workflow to a StateGraph per call, wraps nodes/
   immutable and return a new state. Pydantic freezing prevents top-level assignment; nested
   dictionaries remain mutable.
 - **Routing**: a node has exactly one outgoing connection — an `Edge`, or a `ConditionalEdge`
-  whose router maps state to a route key. `END` terminates.
-- **Results**: `WorkflowResult(state, trace)`, where `trace` is the ordered node names that
-  ran. Failures raise `NodeExecutionError` (original exception chained, trace attached) or
+  whose router maps state to a route key. An optional `ErrorEdge` targets a `RecoveryNode`
+  after eligible failures exhaust retries. `END` terminates.
+- **Results**: `WorkflowResult(state, trace, records)`, where `trace` is the ordered node names
+  that ran and `records` contain attempts, timeouts, outcomes and recovery routing. Failures
+  raise `NodeExecutionError` (original exception chained, metadata attached) or
   `WorkflowExecutionError` (step limit, bad route).
 - **`Agent.run`** guarantees the returned state is terminal (`COMPLETED` or `FAILED`),
   otherwise raises `AgentError`.
@@ -72,13 +74,23 @@ what was *done*, not model reasoning (ADR-005).
 | Package | Key types | Notes |
 |---|---|---|
 | `core` | `Task`, `MaximusForgeError` hierarchy | No framework dependencies |
-| `workflows` | `Workflow`, `WorkflowNode`, `FunctionNode`, `WorkflowEngine`, `ExecutionConfig`, `WorkflowResult` | Engine-neutral |
+| `workflows` | `Workflow`, nodes, retry/timeout policies, `WorkflowEngine`, `ExecutionConfig`, `WorkflowResult` | Engine-neutral |
 | `workflows.engines` | `LangGraphEngine` | Import by module path; only LangGraph importer |
 | `planning` | `Plan`, `PlanStep`, `Planner`, `LLMPlanner` | |
 | `llm` | `LLMProvider`, `Message`, `LLMResponse`, `OpenAICompatibleProvider`, `ScriptedLLMProvider` (`llm.testing`) | OpenAI-compatible adapter covers hosted and local servers |
 | `tools` | `Tool[In, Out]`, `ToolRegistry`, `ToolResult`, `ToolSpec` | Typed Pydantic I/O; failures are results, not exceptions |
 | `memory` | `MemoryStore`, `SemanticMemoryStore`, `MemoryRecord`, `MemoryQuery`, `InMemoryStore` | Interfaces + a non-durable reference store |
 | `agents` | `Agent`, `AgentState`, `ResearchAgent` | `ResearchAgent` is a minimal architecture check |
+
+### Execution reliability
+
+A node's optional `NodeExecutionPolicy` controls its per-attempt timeout and explicit
+`RetryPolicy`. The default is one attempt with no timeout. A separate error edge directs an
+eligible exhausted failure to a `RecoveryNode`; its `recover(state, failure)` receives a
+framework-owned `NodeFailure`, so user-defined Pydantic state models need no error fields.
+Cancellation bypasses retry and recovery. `ExecutionRecord`s preserve routed failures even
+when the workflow later completes. The policy runner is engine-neutral; the LangGraph adapter
+keeps its routing context private to each call. See [ADR-007](adr/0007-execution-reliability.md).
 
 ### Tools
 
@@ -113,7 +125,7 @@ tests and experiments.
 
 ## Not yet designed (deliberately)
 
-Retries and error edges, parallel branches, human-in-the-loop, checkpointing and resumption,
+Parallel branches, human-in-the-loop, checkpointing and resumption,
 streaming, native LLM tool-calling and ReAct nodes, embeddings, RAG, MCP, multi-agent
 orchestration, evaluation, security tooling, and observability. See the
 [roadmap](roadmap.md).
