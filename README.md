@@ -2,7 +2,7 @@
 
 > A framework for graph-based autonomous AI systems.
 
-**Status: pre-alpha (Execution Reliability v0.1.1).** The architectural foundation and a
+**Status: pre-alpha (Structured Execution Events v0.1.2).** The architectural foundation and a
 minimal executable core exist. Most of the platform described below is planned, not built.
 APIs will change.
 
@@ -63,6 +63,8 @@ dependency rules and extension points, and [docs/adr/](docs/adr/) for the decisi
   `WorkflowEngine` interface
 - LangGraph-backed engine behind that interface, with a step limit, explicit node retries,
   per-attempt timeouts, recovery routes, cancellation propagation and structured records
+- Engine-neutral, per-run structured execution events with an in-memory collector and optional
+  standard-library logging sink
 - `Agent` base class, frozen `AgentState` with enforced status transitions
 - Provider-independent `LLMProvider`, an OpenAI-compatible reference adapter (hosted or local
   servers), and a scripted fake for tests
@@ -75,8 +77,8 @@ dependency rules and extension points, and [docs/adr/](docs/adr/) for the decisi
 
 ### In development
 
-The remaining Phase 1 work is planned: execution events and hooks, native tool-calling,
-a bounded ReAct node, streaming and a serializable state contract. See the
+The remaining Phase 1 work is planned: native tool-calling, a bounded ReAct node,
+streaming and a serializable state contract. See the
 [roadmap](docs/roadmap.md).
 
 ### Planned
@@ -101,6 +103,7 @@ Ruff · mypy (strict). PostgreSQL + pgvector is the intended persistent memory b
 MaximusForge/
 ├── src/maximusforge/
 │   ├── core/            Task, shared error hierarchy
+│   ├── events/          Typed execution events and replaceable sinks
 │   ├── workflows/       Workflow definition, WorkflowEngine interface
 │   │   └── engines/     LangGraph adapter (only place LangGraph is imported)
 │   ├── agents/          Agent base class, AgentState, ResearchAgent
@@ -109,7 +112,7 @@ MaximusForge/
 │   ├── tools/           Tool, ToolRegistry
 │   └── memory/          MemoryStore interfaces, InMemoryStore
 ├── tests/               Unit and architecture tests (no network required)
-├── examples/            Offline ResearchAgent and reliability examples
+├── examples/            Offline ResearchAgent, reliability and event examples
 ├── docs/                architecture.md, roadmap.md, adr/
 ├── pyproject.toml
 └── .env.example         Variable names only
@@ -132,6 +135,7 @@ mypy                         # type check
 
 python examples/research_agent_offline.py
 python examples/execution_reliability_offline.py
+python examples/execution_events_offline.py
 ```
 
 The ResearchAgent example uses a scripted LLM and a canned search tool, so it runs fully offline. To use a
@@ -153,6 +157,27 @@ implicitly trigger node retries.
 Run the [offline reliability example](examples/execution_reliability_offline.py) to see retries
 followed by recovery. See [ADR-007](docs/adr/0007-execution-reliability.md) for semantics,
 cancellation behavior and limitations.
+
+## Structured execution events
+
+Pass an `EventSink` in `ExecutionConfig` to receive typed events while a workflow runs:
+
+```python
+from maximusforge.events import InMemoryEventCollector
+from maximusforge.workflows import ExecutionConfig
+
+collector = InMemoryEventCollector()
+result = await engine.execute(workflow, initial_state, config=ExecutionConfig(event_sink=collector))
+for event in collector.events:
+    print(event.sequence, event.type.value, event.node_name, event.attempt)
+```
+
+Events share `result.run_id` and carry safe metadata for workflow lifecycle, attempts, retries,
+timeouts, recovery routing and cancellation. The event type conveys status. No sink is needed
+for ordinary execution. Sink exceptions are logged by type and do not change workflow results;
+external cancellation still propagates. Event delivery is inline, so slow sinks can delay a run.
+Run the [offline events example](examples/execution_events_offline.py) for a retry timeline.
+See [ADR-008](docs/adr/0008-structured-execution-events.md) for ordering and delivery rules.
 
 ## Development philosophy
 

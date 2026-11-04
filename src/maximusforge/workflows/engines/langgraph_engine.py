@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any, cast
@@ -20,8 +22,10 @@ from maximusforge.core.errors import (
     NodeFailure,
     WorkflowExecutionError,
 )
+from maximusforge.events.sink import _RunEventEmitter
+from maximusforge.events.types import ExecutionEventType
 from maximusforge.workflows.engine import ExecutionConfig, WorkflowEngine, WorkflowResult
-from maximusforge.workflows.reliability import _is_recoverable, _run_attempts
+from maximusforge.workflows.reliability import _category, _is_recoverable, _run_attempts
 from maximusforge.workflows.workflow import END, RecoveryNode, S, Workflow, WorkflowNode
 
 
@@ -36,6 +40,50 @@ class _RunContext:
     pending_recovery: dict[str, NodeFailure] = field(default_factory=dict)
 
 
+class _NodeAttemptObserver:
+    """Translate authoritative retry transitions into public node events."""
+
+    def __init__(
+        self, events: _RunEventEmitter, node_name: str, recovery_for: str | None
+    ) -> None:
+        self.events = events
+        self.node_name = node_name
+        self.recovery_for = recovery_for
+
+    async def started(self, attempt: int) -> None:
+        await self.events.emit(
+            ExecutionEventType.NODE_STARTED,
+            node_name=self.node_name,
+            attempt=attempt,
+            recovery_for=self.recovery_for,
+        )
+
+    async def failed(
+        self, attempt: int, category: FailureCategory, duration_seconds: float
+    ) -> None:
+        await self.events.emit(
+            ExecutionEventType.NODE_ATTEMPT_FAILED,
+            node_name=self.node_name,
+            attempt=attempt,
+            category=category,
+            duration_seconds=duration_seconds,
+            recovery_for=self.recovery_for,
+        )
+
+    async def retry_scheduled(
+        self, attempt: int, next_attempt: int, category: FailureCategory, delay_seconds: float
+    ) -> None:
+        await self.events.emit(
+            ExecutionEventType.NODE_RETRY_SCHEDULED,
+            node_name=self.node_name,
+            attempt=attempt,
+            category=category,
+            next_attempt=next_attempt,
+            retry_delay_seconds=delay_seconds,
+            recovery_for=self.recovery_for,
+        )
+
+
 class LangGraphEngine(WorkflowEngine):
     """Compile a workflow per call, keeping policies and recovery state run-local."""
 
@@ -46,32 +94,54 @@ class LangGraphEngine(WorkflowEngine):
         *,
         config: ExecutionConfig | None = None,
     ) -> WorkflowResult[S]:
-        workflow.validate()
         config = config or ExecutionConfig()
-        if not isinstance(initial_state, workflow.state_type):
-            raise WorkflowExecutionError(
-                "initial state has the wrong type", category=FailureCategory.INVALID_STATE
-            )
-        context = _RunContext(max_steps=config.max_steps)
-        compiled = self._compile(workflow, context)
+        events = _RunEventEmitter(workflow.name, config.event_sink)
+        started_at = time.perf_counter()
         try:
-            output = await compiled.ainvoke(
-                initial_state, config={"recursion_limit": config.max_steps + 1}
+            await events.emit(ExecutionEventType.WORKFLOW_STARTED)
+            workflow.validate()
+            if not isinstance(initial_state, workflow.state_type):
+                raise WorkflowExecutionError(
+                    "initial state has the wrong type", category=FailureCategory.INVALID_STATE
+                )
+            context = _RunContext(max_steps=config.max_steps)
+            compiled = self._compile(workflow, context, events)
+            try:
+                output = await compiled.ainvoke(
+                    initial_state, config={"recursion_limit": config.max_steps + 1}
+                )
+            except GraphRecursionError as exc:
+                raise WorkflowExecutionError(
+                    f"workflow {workflow.name!r} exceeded max_steps={config.max_steps}",
+                    trace=context.trace,
+                    records=context.records,
+                    category=FailureCategory.STEP_LIMIT,
+                ) from exc
+            result = WorkflowResult(
+                state=_coerce(workflow.state_type, output),
+                trace=tuple(context.trace),
+                records=tuple(context.records),
+                run_id=events.run_id,
             )
-        except GraphRecursionError as exc:
-            raise WorkflowExecutionError(
-                f"workflow {workflow.name!r} exceeded max_steps={config.max_steps}",
-                trace=context.trace,
-                records=context.records,
-                category=FailureCategory.STEP_LIMIT,
-            ) from exc
-        return WorkflowResult(
-            state=_coerce(workflow.state_type, output),
-            trace=tuple(context.trace),
-            records=tuple(context.records),
-        )
+            await events.emit(
+                ExecutionEventType.WORKFLOW_COMPLETED,
+                duration_seconds=time.perf_counter() - started_at,
+            )
+            return result
+        except asyncio.CancelledError:
+            await events.emit_cancelled(duration_seconds=time.perf_counter() - started_at)
+            raise
+        except Exception as exc:
+            await events.emit(
+                ExecutionEventType.WORKFLOW_FAILED,
+                category=_category(exc, False),
+                duration_seconds=time.perf_counter() - started_at,
+            )
+            raise
 
-    def _compile(self, workflow: Workflow[S], context: _RunContext) -> Any:
+    def _compile(
+        self, workflow: Workflow[S], context: _RunContext, events: _RunEventEmitter
+    ) -> Any:
         graph = StateGraph(workflow.state_type)
         for name, node in workflow.nodes.items():
             error_edge = workflow.error_edges.get(name)
@@ -83,6 +153,7 @@ class LangGraphEngine(WorkflowEngine):
                         node,
                         context,
                         error_edge.target if error_edge is not None else None,
+                        events,
                     )
                 ),
             )
@@ -108,6 +179,7 @@ class LangGraphEngine(WorkflowEngine):
                     conditional.routes if conditional is not None else None,
                     error_edge.target if error_edge is not None else None,
                     context,
+                    events,
                 ),
                 {target: _target(target) for target in targets},
             )
@@ -191,6 +263,7 @@ def _wrap_node(
     node: WorkflowNode[S],
     context: _RunContext,
     error_target: str | None,
+    events: _RunEventEmitter,
 ) -> Callable[[BaseModel], Awaitable[dict[str, Any]]]:
     async def execute_node(state: BaseModel) -> dict[str, Any]:
         if len(context.trace) >= context.max_steps:
@@ -228,7 +301,13 @@ def _wrap_node(
                 value = await node.run(attempt_state)
             return _validate_node_output(state_type, value)
 
-        outcome = await _run_attempts(run_node, node.policy)
+        recovery_for = prior_failure.node if prior_failure is not None else None
+        started_at = time.perf_counter()
+        outcome = await _run_attempts(
+            run_node,
+            node.policy,
+            observer=_NodeAttemptObserver(events, name, recovery_for),
+        )
         error = outcome.error
         if error is not None:
             failure = NodeFailure(
@@ -248,6 +327,14 @@ def _wrap_node(
                     last_error_category=outcome.last_error_category,
                     last_exception_type=outcome.last_exception_type,
                 )
+            )
+            await events.emit(
+                ExecutionEventType.NODE_FAILED,
+                node_name=name,
+                attempt=outcome.attempts,
+                category=failure.category,
+                duration_seconds=time.perf_counter() - started_at,
+                recovery_for=recovery_for,
             )
             if error_target is not None and _is_recoverable(error):
                 context.route_failures[name] = failure
@@ -269,6 +356,13 @@ def _wrap_node(
                 last_exception_type=outcome.last_exception_type,
             )
         )
+        await events.emit(
+            ExecutionEventType.NODE_COMPLETED,
+            node_name=name,
+            attempt=outcome.attempts,
+            duration_seconds=time.perf_counter() - started_at,
+            recovery_for=recovery_for,
+        )
         assert isinstance(outcome.value, state_type)
         return _as_update(outcome.value)
 
@@ -283,8 +377,9 @@ def _wrap_router(
     routes: Mapping[str, str] | None,
     error_target: str | None,
     context: _RunContext,
-) -> Callable[[S], str]:
-    def route(state: S) -> str:
+    events: _RunEventEmitter,
+) -> Callable[[S], Awaitable[str]]:
+    async def route(state: S) -> str:
         failure = context.route_failures.pop(source, None)
         if failure is not None:
             if error_target is None:
@@ -292,6 +387,13 @@ def _wrap_router(
             context.pending_recovery[error_target] = failure
             context.records[-1] = replace(
                 context.records[-1], outcome=ExecutionOutcome.ROUTED, routed_to=error_target
+            )
+            await events.emit(
+                ExecutionEventType.NODE_RECOVERY_ROUTED,
+                node_name=source,
+                attempt=failure.attempts,
+                category=failure.category,
+                recovery_target=error_target,
             )
             return error_target
         if router is None:
