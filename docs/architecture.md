@@ -1,6 +1,6 @@
 # Architecture
 
-This document describes the architecture of MaximusForge **as implemented through v0.1.1**,
+This document describes the architecture of MaximusForge **as implemented through v0.1.2**,
 and marks where planned components will attach. Decisions and their rationale live in the
 [ADRs](adr/).
 
@@ -36,7 +36,7 @@ Agent.run(task)
    │  initial = AgentState.for_task(task) → RUNNING
    ▼
 Workflow            engine-neutral graph: nodes, edges, conditional edges, entry, state type
-   │  engine.execute(workflow, initial, config)
+   │  engine.execute(workflow, initial, config) ──► optional EventSink
    ▼
 WorkflowEngine      ABC — the replaceable boundary (ADR-006)
    │
@@ -50,7 +50,7 @@ LangGraphEngine     compiles the Workflow to a StateGraph per call, wraps nodes/
 - **Routing**: a node has exactly one outgoing connection — an `Edge`, or a `ConditionalEdge`
   whose router maps state to a route key. An optional `ErrorEdge` targets a `RecoveryNode`
   after eligible failures exhaust retries. `END` terminates.
-- **Results**: `WorkflowResult(state, trace, records)`, where `trace` is the ordered node names
+- **Results**: `WorkflowResult(state, trace, records, run_id)`, where `trace` is the ordered node names
   that ran and `records` contain attempts, timeouts, outcomes and recovery routing. Failures
   raise `NodeExecutionError` (original exception chained, metadata attached) or
   `WorkflowExecutionError` (step limit, bad route).
@@ -75,6 +75,7 @@ what was *done*, not model reasoning (ADR-005).
 |---|---|---|
 | `core` | `Task`, `MaximusForgeError` hierarchy | No framework dependencies |
 | `workflows` | `Workflow`, nodes, retry/timeout policies, `WorkflowEngine`, `ExecutionConfig`, `WorkflowResult` | Engine-neutral |
+| `events` | `ExecutionEvent`, `ExecutionEventType`, `EventSink`, `InMemoryEventCollector`, `LoggingEventSink` | Engine-neutral, optional |
 | `workflows.engines` | `LangGraphEngine` | Import by module path; only LangGraph importer |
 | `planning` | `Plan`, `PlanStep`, `Planner`, `LLMPlanner` | |
 | `llm` | `LLMProvider`, `Message`, `LLMResponse`, `OpenAICompatibleProvider`, `ScriptedLLMProvider` (`llm.testing`) | OpenAI-compatible adapter covers hosted and local servers |
@@ -91,6 +92,17 @@ framework-owned `NodeFailure`, so user-defined Pydantic state models need no err
 Cancellation bypasses retry and recovery. `ExecutionRecord`s preserve routed failures even
 when the workflow later completes. The policy runner is engine-neutral; the LangGraph adapter
 keeps its routing context private to each call. See [ADR-007](adr/0007-execution-reliability.md).
+
+### Execution events
+
+`ExecutionConfig(event_sink=...)` selects an optional, per-run `EventSink`. A run gets a UUID and
+ordered event sequence. The engine-neutral reliability loop reports attempt transitions; the
+LangGraph adapter emits node, recovery and workflow lifecycle events without reclassifying
+failures. `ExecutionRecord` summarizes a completed node visit, while events reveal transitions
+as they happen. A sink receives events inline; its ordinary exceptions are logged by type and
+cannot change the workflow result. Cancellation propagates, with a nonblocking best-effort
+cancellation event. `InMemoryEventCollector` and `LoggingEventSink` are small reference sinks.
+See [ADR-008](adr/0008-structured-execution-events.md).
 
 ### Tools
 
@@ -119,6 +131,7 @@ tests and experiments.
 |---|---|---|
 | A new agent | Subclass `Agent`, implement `build_workflow()` | Construct with an engine and its dependencies |
 | A native graph engine | `WorkflowEngine` in `workflows/engines/` | Add to the `engine` fixture in `tests/conftest.py`; contract tests run against it |
+| An event consumer | `EventSink` in `events/` | Pass it per run through `ExecutionConfig` |
 | An LLM provider | `LLMProvider` | Inject into agents/planners |
 | A tool | `Tool` subclass | `ToolRegistry.register()` |
 | A PostgreSQL/pgvector backend | `SemanticMemoryStore` | Inject where memory is needed |
@@ -127,7 +140,7 @@ tests and experiments.
 
 Parallel branches, human-in-the-loop, checkpointing and resumption,
 streaming, native LLM tool-calling and ReAct nodes, embeddings, RAG, MCP, multi-agent
-orchestration, evaluation, security tooling, and observability. See the
+orchestration, evaluation, security tooling, and full observability. See the
 [roadmap](roadmap.md).
 
 ## Architectural tests

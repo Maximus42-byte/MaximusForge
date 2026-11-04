@@ -3,7 +3,7 @@
 Status legend: ✅ available · 🚧 in development · 🗓️ planned. Phases are ordered by dependency,
 not by dates; scope within a phase may change as we learn.
 
-## Phase 0 — Bootstrap v0.1 ✅ (this repository state)
+## Phase 0 — Bootstrap v0.1 ✅
 
 - ✅ Package layout, packaging, lint/type/test configuration
 - ✅ Core abstractions: `Task`, `AgentState`, `Agent`, `Workflow`, `WorkflowNode`, `WorkflowEngine`
@@ -13,7 +13,7 @@ not by dates; scope within a phase may change as we learn.
 - ✅ `MemoryStore` / `SemanticMemoryStore` interfaces + non-durable `InMemoryStore`
 - ✅ `Planner` / `LLMPlanner`
 - ✅ Minimal `ResearchAgent` (architecture check, not a product)
-- ✅ ADRs 0001–0006 (ADR-007 records v0.1.1)
+- ✅ ADRs 0001–0006 (ADR-007 and ADR-008 record later milestones)
 
 ## Milestone v0.1.1 — Execution reliability ✅
 
@@ -22,10 +22,16 @@ not by dates; scope within a phase may change as we learn.
 - ✅ Error edges, recovery nodes and structured failure context
 - ✅ Offline contract tests and a runnable reliability example
 
+## Milestone v0.1.2 — Structured execution events ✅
+
+- ✅ Typed, engine-neutral lifecycle and attempt events with per-run identifiers
+- ✅ Per-run event sinks, in-memory collection and optional structured logging
+- ✅ Retry, timeout, recovery and cancellation event contract tests
+- ✅ Offline event timeline example and ADR-008
+
 ## Phase 1 — Remaining robust execution 🗓️
 
 - Re-planning on failure
-- Execution events/hooks and structured logging (foundation for observability)
 - Native LLM tool-calling and a bounded `ReActNode`
 - Streaming responses
 - Serializable state contract

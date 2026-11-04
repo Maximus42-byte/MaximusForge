@@ -4,9 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import math
+import time
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
-from typing import Generic, TypeVar
+from typing import Generic, Protocol, TypeVar
 
 from pydantic import ValidationError
 
@@ -113,6 +114,20 @@ class _AttemptResult(Generic[T]):
     last_exception_type: str | None
 
 
+class _AttemptObserver(Protocol):
+    """Engine-neutral attempt transitions, supplied by an engine when events are enabled."""
+
+    async def started(self, attempt: int) -> None: ...
+
+    async def failed(
+        self, attempt: int, category: FailureCategory, duration_seconds: float
+    ) -> None: ...
+
+    async def retry_scheduled(
+        self, attempt: int, next_attempt: int, category: FailureCategory, delay_seconds: float
+    ) -> None: ...
+
+
 def _is_recoverable(error: Exception) -> bool:
     return not isinstance(error, (*_NON_RETRYABLE, WorkflowExecutionError))
 
@@ -135,7 +150,10 @@ async def _sleep_backoff(delay: float) -> None:
 
 
 async def _run_attempts(
-    run: Callable[[], Awaitable[T]], policy: NodeExecutionPolicy | None
+    run: Callable[[], Awaitable[T]],
+    policy: NodeExecutionPolicy | None,
+    *,
+    observer: _AttemptObserver | None = None,
 ) -> _AttemptResult[T]:
     """Run one node invocation; cancellation remains a BaseException and propagates."""
     policy = policy or NodeExecutionPolicy()
@@ -145,6 +163,9 @@ async def _run_attempts(
     last_error_category: FailureCategory | None = None
     last_exception_type: str | None = None
     for attempt in range(1, limit + 1):
+        if observer is not None:
+            await observer.started(attempt)
+        started_at = time.perf_counter()
         deadline = asyncio.timeout(policy.timeout_seconds)
         try:
             async with deadline:
@@ -159,6 +180,8 @@ async def _run_attempts(
             if timed_out:
                 timeouts += 1
             category = _category(exc, timed_out)
+            if observer is not None:
+                await observer.failed(attempt, category, time.perf_counter() - started_at)
             last_error_category = category
             last_exception_type = type(exc).__name__
             eligible = (
@@ -181,7 +204,10 @@ async def _run_attempts(
                     last_exception_type,
                 )
             assert retry is not None
-            await _sleep_backoff(retry.delay_after(attempt))
+            delay = retry.delay_after(attempt)
+            if observer is not None:
+                await observer.retry_scheduled(attempt, attempt + 1, category, delay)
+            await _sleep_backoff(delay)
         else:
             return _AttemptResult(
                 value,
