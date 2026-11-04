@@ -13,12 +13,18 @@ not by dates; scope within a phase may change as we learn.
 - ✅ `MemoryStore` / `SemanticMemoryStore` interfaces + non-durable `InMemoryStore`
 - ✅ `Planner` / `LLMPlanner`
 - ✅ Minimal `ResearchAgent` (architecture check, not a product)
-- ✅ ADRs 0001–0006
+- ✅ ADRs 0001–0006 (ADR-007 records v0.1.1)
 
-## Phase 1 — Robust execution 🗓️
+## Milestone v0.1.1 — Execution reliability ✅
 
-- Retry policies and backoff per node
-- Error routing (failure-handling edges), re-planning on failure
+- ✅ Explicit node-level retries with bounded backoff and attempt metadata
+- ✅ Per-attempt async timeouts and safe cancellation propagation
+- ✅ Error edges, recovery nodes and structured failure context
+- ✅ Offline contract tests and a runnable reliability example
+
+## Phase 1 — Remaining robust execution 🗓️
+
+- Re-planning on failure
 - Execution events/hooks and structured logging (foundation for observability)
 - Native LLM tool-calling and a bounded `ReActNode`
 - Streaming responses

@@ -4,7 +4,7 @@ import pytest
 from pydantic import BaseModel
 
 from maximusforge.core import WorkflowValidationError
-from maximusforge.workflows import END, FunctionNode, Workflow
+from maximusforge.workflows import END, FunctionNode, FunctionRecoveryNode, Workflow
 
 
 class Counter(BaseModel):
@@ -81,3 +81,41 @@ def test_node_without_outgoing_connection_rejected() -> None:
 def test_empty_workflow_rejected() -> None:
     with pytest.raises(WorkflowValidationError, match="no nodes"):
         Workflow("w", Counter).validate()
+
+
+async def _recover(state: Counter, failure: object) -> Counter:
+    return state
+
+
+@pytest.mark.parametrize("target", ["ghost", END, "normal"])
+def test_invalid_error_destination_rejected(target: str) -> None:
+    wf = (
+        Workflow("w", Counter)
+        .add_node(_node("a"))
+        .add_node(_node("normal"))
+        .set_entry("a")
+        .add_edge("a", END)
+        .add_edge("normal", END)
+        .add_error_edge("a", target)
+    )
+    with pytest.raises(WorkflowValidationError):
+        wf.validate()
+
+
+def test_recovery_node_cannot_be_entered_normally() -> None:
+    wf = (
+        Workflow("w", Counter)
+        .add_node(_node("a"))
+        .add_node(FunctionRecoveryNode("fix", _recover))
+        .set_entry("a")
+        .add_edge("a", "fix")
+        .add_edge("fix", END)
+    )
+    with pytest.raises(WorkflowValidationError, match="normal edges"):
+        wf.validate()
+
+
+def test_duplicate_error_connection_rejected() -> None:
+    wf = Workflow("w", Counter).add_error_edge("a", "fix")
+    with pytest.raises(WorkflowValidationError, match="error connection"):
+        wf.add_error_edge("a", "fix")

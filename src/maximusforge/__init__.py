@@ -4,4 +4,4 @@ Subpackages are imported explicitly (``maximusforge.llm``, ``maximusforge.workfl
 nothing heavy is imported here.
 """
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"

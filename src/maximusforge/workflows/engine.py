@@ -10,6 +10,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Generic
 
+from maximusforge.core.errors import ExecutionRecord
 from maximusforge.workflows.workflow import S, Workflow
 
 
@@ -29,6 +30,9 @@ class WorkflowResult(Generic[S]):
     trace: tuple[str, ...] = field(default=())
     """Names of the nodes that executed, in order."""
 
+    records: tuple[ExecutionRecord, ...] = field(default=())
+    """Attempt counts and outcomes for each node visit."""
+
 
 class WorkflowEngine(ABC):
     """Executes a :class:`Workflow` from an initial state to completion.
@@ -41,6 +45,9 @@ class WorkflowEngine(ABC):
       the original exception and populating ``trace``;
     * raise :class:`~maximusforge.core.errors.WorkflowExecutionError` if ``max_steps`` is
       exceeded or a router returns an undeclared route;
+    * apply node policies per attempt, exhaust eligible retries before error routing, and
+      propagate external cancellation without retry or recovery;
+    * return one execution record per node visit, including attempts and routed failures;
     * not retain state between calls.
     """
 
